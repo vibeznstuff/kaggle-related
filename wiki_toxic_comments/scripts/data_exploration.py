@@ -10,18 +10,41 @@ new_timer = timer	#End Time snapshot for tracking runtime
 spell_checker = enchant.DictWithPWL("en_US","../additional_enchant_terms.txt")
 typo_catches = {} #Record all suspected typos
 record_counts = {} #Track record count by toxic type
-
+terms_by_type = {}
+thread_id = 0
+begin = 0
+end = 0
+reminders = {}
+df = pd.read_csv(r"C:\Users\Richard\Documents\open_data\kaggle\wiki_toxic_comments\train.csv")
+df_base = df.loc[(df['toxic'] == 0) & (df['toxic'] == 0) & \
+			(df['severe_toxic'] == 0) & (df['obscene'] == 0) & (df['threat'] == 0) & \
+			(df['insult'] == 0) & (df['identity_hate'] == 0)]
+thread_dict = {}
+			
+def process_base_terms(begin,end,thread_id):
+	global thread_dict
+	my_df = df_base.truncate(before=begin,after=end)
+	thread_dict[thread_id]=[]
+	for index, row in my_df.iterrows():
+		if time.time() - reminders[thread_id] > 30:
+			reminders[thread_id] = time.time()
+			progress = round(float(index-begin)/float(end-begin),2)
+			print("\nThread ID " + str(thread_id) + " is " + str(progress) + "% complete.")
+		if len(row['comment_text']) <= 300:
+			comment = clean_comments(row['comment_text'].lower())
+			thread_dict[thread_id] = thread_dict[thread_id] + comment
+			log_snapshot("\n\nThread " + str(thread_id) + " has completed processing for Index:" + str(index) + "-->" + row['comment_text'])
+	
 #Threads for parallel processing
 class MyThread(threading.Thread):
 	def run(self):
-		print("This is thread " + str(theVar) + " speaking.")
-		print("Begin: " + str(begin) + ", End: " + str(end))
-		df = pd.read_csv(r"C:\Users\Richard\Documents\open_data\my_data\tmp\fake_credit_scores2.csv")
-		my_df = df.truncate(before=begin,after=end)
-		sums.append(my_df.agg({'credit_score':['sum']}).iat[0,0])
-		print(my_df.agg({'credit_score':['sum']}).iat[0,0])
-		print("Hello and goodbye!")
-		theVar +=1
+		global thread_id, begin, end
+		thread_id += 1
+		self.id=thread_id
+		reminders[self.id]=time.time()
+		print("This is thread " + str(thread_id) + " speaking.")
+		print("Processing rows " + str(begin) + " to " + str(end))
+		process_base_terms(begin,end,thread_id)
 
 #Evaluate if a typo exists and correct if possible
 #	e.g. "exelent" -> "excellent"
@@ -78,7 +101,7 @@ def log_snapshot(process_name):
 		print(process_name + " has completed after " + str(round(elapsed_seconds/60.0,2)) + " minutes.")
 		return elapsed_seconds
 	elif elapsed_seconds < 60:
-		if elapsed_seconds >= 1:
+		if elapsed_seconds >= 5:
 			print(process_name + " has completed after " + str(round(elapsed_seconds,0)) + " seconds.")
 		return elapsed_seconds
 	else:
@@ -97,42 +120,41 @@ def clean_comments(text):
 	for char in unwanted_chars:
 		new_text = new_text.replace(char,"")
 	
-	log_snapshot("Taken out unwanted chars for " + text)
+	#log_snapshot("Taken out unwanted chars for " + text)
 		
 	#Get distinct terms within a comment
 	term_list = list(set(new_text.split()))
 	
-	log_snapshot("Obtained distinct terms for" + text)
+	#log_snapshot("Obtained distinct terms for" + text)
 	
 	#Get rid of duplicate characters used for exaggeration
 	term_list = [remove_emphasis_dupes(x) for x in term_list]
 	
-	log_snapshot("Remove emphasis dupes for " + text)
+	#log_snapshot("Remove emphasis dupes for " + text)
 	
 	#Correct typos in comment
 	for term in term_list:
 		recommend_typo_fix(term)
 	
-	log_snapshot("Correct typos in comment")
+	#log_snapshot("Correct typos in comment for " + text)
 	
 	#Remove terms which are unreasonably long as they are likely junk
 	term_list = [x for x in term_list if len(x) < 50]
 	
-	log_snapshot("Remove terms which are suspiciously long for" + text)
+	#log_snapshot("Remove terms which are suspiciously long for" + text)
 	
 	return term_list
 	
 #Create the term frequencies for each type of toxic type,
 #including the comments which are not toxic (or normal,'base')
-def create_terms_by_type(file_path):
-	df = pd.read_csv(file_path)
+def create_terms_by_type(df):
+	global terms_by_type
 	print("Dataframe size before cleaning: " + str(len(df)))
 	# <Enter data cleaning code here>
 	print("Dataframe size after cleaning: " + str(len(df)))
 	
 	#Create separate subsets for training against specific
 	#toxic types
-	terms_by_type = {}
 	for type in toxic_types:
 		terms_by_type[type]=[]
 		tmp_df = df.loc[df[type] == 1]
@@ -143,21 +165,45 @@ def create_terms_by_type(file_path):
 			terms_by_type[type] = terms_by_type[type] + comment
 		#tmp_df.to_csv("../output/"+type+"_train.csv")
 		log_snapshot("Creating terms for " + type)
+	return terms_by_type
 	
+	
+def create_base_terms(threads):
+	global begin, end
 	#Create subset of data for 'base' or standard comments
-	df_base = df.loc[(df['toxic'] == 0) & (df['toxic'] == 0) & \
-			(df['severe_toxic'] == 0) & (df['obscene'] == 0) & (df['threat'] == 0) & \
-			(df['insult'] == 0) & (df['identity_hate'] == 0)]
+	
 	record_counts['base'] = len(df_base)
 	print(str(record_counts['base']) + " records for 'base' toxic type.")
 	terms_by_type['base']=[]
-	for index, row in df_base.iterrows():
-		comment = clean_comments(row['comment_text'].lower())
-		terms_by_type['base'] = terms_by_type['base'] + comment
-	#df_base.to_csv("../output/base_train.csv")
-	log_snapshot("Creating terms for base")
+	thread_lst = []
 	
-	return terms_by_type
+	for x in range(0,threads):
+		if x == 0:
+			begin=round((record_counts['base']/threads)*(x),0)
+		else:
+			begin=round((record_counts['base']/threads)*(x)+1,0)
+		end=round((record_counts['base']/threads)*(x+1),0)
+		thread_lst.append(MyThread())
+		thread_lst[x].start()
+		time.sleep(5)
+	
+	for i in thread_lst:
+		while i.isAlive():
+			True
+		print("Thread " + str(i.id) + " has finished!")
+	
+	base_terms = []
+	for id in list(thread_dict.keys()):
+		base_terms = base_terms + thread_dict[id]
+		
+	base_term_counts = Counter(base_terms)
+	
+	print(base_term_counts)
+	#for index, row in df_base.iterrows():
+	#	comment = clean_comments(row['comment_text'].lower())
+	#	terms_by_type['base'] = terms_by_type['base'] + comment
+	#df_base.to_csv("../output/base_train.csv")
+	#log_snapshot("Creating terms for base")
 
 #Produce the top terms for each toxic type
 def reveal_top_terms_by_type(terms_dict):
@@ -185,10 +231,11 @@ def score_term_significance(term_freqs, base_terms):
 		
 #Run end-to-end data preparation process
 def main():
-	terms_by_type = create_terms_by_type(r"C:\Users\Richard\Documents\open_data\kaggle\wiki_toxic_comments\train.csv")
-	term_freqs = reveal_top_terms_by_type(terms_by_type)
-	significant_terms = score_term_significance(term_freqs,terms_by_type['base'])
-	print(significant_terms)
+	create_base_terms(4)
+	#terms_by_type = create_terms_by_type(df)
+	#term_freqs = reveal_top_terms_by_type(terms_by_type)
+	#significant_terms = score_term_significance(term_freqs,terms_by_type['base'])
+	#print(significant_terms)
 
 if __name__ == "__main__":
 	main()
